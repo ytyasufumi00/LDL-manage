@@ -1,143 +1,174 @@
 import streamlit as st
 import plotly.graph_objects as go
+import pandas as pd
 
 # ページ設定
-st.set_page_config(page_title="LDL管理目標計算システム", layout="centered")
+st.set_page_config(page_title="LDL Global Target Calculator", layout="wide")
 
-st.title("🫀 LDLコレステロール管理目標値計算")
-st.markdown("日本動脈硬化学会（JAS 2022）ガイドラインに基づく管理区分判定システム")
+st.title("🌐 LDLコレステロール管理目標：世界3極比較")
+st.markdown("日本 (JAS 2022)、欧州 (ESC/EAS 2019/23)、米国 (ACC/ADA 2024) のガイドライン比較")
 
-# --- サイドバー：ユーザー入力 ---
-st.sidebar.header("患者データの入力")
+# --- サイドバー：患者データの入力 ---
+st.sidebar.header("患者プロファイル")
 
 # 1. 現在のLDL値
 current_ldl = st.sidebar.number_input("現在のLDL値 (mg/dL)", min_value=0, max_value=500, value=140)
 
-# 2. 病歴（二次予防か一次予防かの分岐）
-st.sidebar.subheader("既往歴・合併症")
+# 2. 病歴
+st.sidebar.subheader("既往歴・リスク因子")
 has_cad = st.sidebar.checkbox("冠動脈疾患の既往あり (二次予防)")
 
-target_ldl = 0
-risk_category = ""
-description = ""
+# 変数初期化
+targets = {
+    "JP": {"val": 0, "desc": ""},
+    "EU": {"val": 0, "desc": ""},
+    "US": {"val": 0, "desc": ""}
+}
 
-# --- ロジック判定 ---
+# --- ロジック判定エンジン ---
 
 if has_cad:
-    # --- 二次予防（既往あり） ---
+    # === 二次予防 ===
     st.sidebar.markdown("---")
     st.sidebar.markdown("**二次予防の高リスク病態**")
     
-    # 急性冠症候群, FH, 糖尿病, 複雑病変など
-    is_very_high_risk = st.sidebar.checkbox("高リスク病態 (ACS, FH, 糖尿病合併など)")
+    is_extreme = st.sidebar.checkbox("再発・進行性 (Extreme Risk)")
+    is_very_high = st.sidebar.checkbox("高リスク病態 (ACS, 糖尿病, FH合併)")
     
-    # 欧州基準などを考慮したExtreme Risk
-    is_extreme_risk = st.sidebar.checkbox("再発・難治性 (Extreme Risk相当)")
-
-    if is_extreme_risk:
-        target_ldl = 55
-        risk_category = "二次予防：Extreme Risk"
-        description = "度重なる再発や多血管疾患など。JAS2022では到達努力、欧州では必須とされるレベル。"
-    elif is_very_high_risk:
-        target_ldl = 70
-        risk_category = "二次予防：高リスク"
-        description = "ACS、糖尿病、CKDなどを合併する冠動脈疾患既往者。"
+    # --- 日本 (JAS 2022) ---
+    if is_extreme:
+        targets["JP"] = {"val": 55, "desc": "Extreme Risk (到達努力)"}
+    elif is_very_high:
+        targets["JP"] = {"val": 70, "desc": "高リスク二次予防"}
     else:
-        target_ldl = 100
-        risk_category = "二次予防：一般"
-        description = "冠動脈疾患の既往がある一般的な症例。"
+        targets["JP"] = {"val": 100, "desc": "一般的二次予防"}
+
+    # --- 欧州 (ESC/EAS) ---
+    # 欧州は二次予防は原則すべて「超高リスク」扱い
+    if is_extreme:
+         targets["EU"] = {"val": 40, "desc": "再発例 (2年以内) 推奨"}
+    else:
+         targets["EU"] = {"val": 55, "desc": "二次予防は一律 <55"}
+
+    # --- 米国 (ACC/AHA/ADA) ---
+    if is_very_high or is_extreme:
+        targets["US"] = {"val": 55, "desc": "Very High Risk (ADA 2024)"}
+    else:
+        targets["US"] = {"val": 70, "desc": "High Risk (Threshold)"}
 
 else:
-    # --- 一次予防（既往なし） ---
-    # 簡易フローチャートに基づくロジック
+    # === 一次予防 ===
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**一次予防のリスク因子**")
     
-    # 高リスク病態の確認
-    has_dm = st.sidebar.checkbox("糖尿病")
+    has_dm = st.sidebar.checkbox("糖尿病 (DM)")
     has_ckd = st.sidebar.checkbox("慢性腎臓病 (CKD)")
-    has_pad = st.sidebar.checkbox("非心原性脳梗塞 / PAD")
+    has_fh = st.sidebar.checkbox("家族性高コレステロール血症 (FH)")
     
-    if has_dm or has_ckd or has_pad:
-        target_ldl = 120
-        risk_category = "高リスク (High Risk)"
-        description = "糖尿病、CKD、または脳梗塞/PADの既往がある場合。"
+    # 簡易スコアリング用
+    age = st.sidebar.number_input("年齢", 20, 100, 50)
+    st.sidebar.caption("その他: 高血圧, 喫煙, 低HDL等は簡易判定に含みます")
+    risk_factors = st.sidebar.slider("その他のリスク因子数", 0, 5, 1)
+    
+    # --- 日本 (JAS 2022) ---
+    if has_fh or has_dm or has_ckd: # 本来はもっと細かい区分あり
+        targets["JP"] = {"val": 120, "desc": "高リスク"}
+    elif risk_factors >= 2:
+        targets["JP"] = {"val": 140, "desc": "中リスク"}
     else:
-        # その他のリスク因子（簡易スコアリング）
-        st.sidebar.markdown("---")
-        st.sidebar.markdown("**その他のリスク因子**")
-        age = st.sidebar.number_input("年齢", 20, 100, 50)
-        gender = st.sidebar.radio("性別", ["男性", "女性"])
-        is_smoker = st.sidebar.checkbox("喫煙")
-        is_ht = st.sidebar.checkbox("高血圧")
-        is_low_hdl = st.sidebar.checkbox("低HDL血症 (<40)")
-        has_fh_history = st.sidebar.checkbox("早発性冠動脈疾患の家族歴")
-        
-        # 簡易的なリスクカウント（厳密な吹田スコアではないが目安として実装）
-        risk_count = 0
-        if is_smoker: risk_count += 1
-        if is_ht: risk_count += 1
-        if is_low_hdl: risk_count += 1
-        if has_fh_history: risk_count += 1
-        # 年齢による加算（男性≧45, 女性≧55など簡易的に）
-        if (gender == "男性" and age >= 45) or (gender == "女性" and age >= 55):
-            risk_count += 1
+        targets["JP"] = {"val": 160, "desc": "低リスク"}
 
-        if risk_count >= 3:
-            target_ldl = 140
-            risk_category = "中リスク (Medium Risk)"
-            description = "リスク因子が複数重積している状態 (吹田スコア等で評価推奨)。"
-            # 注: 本来のJAS2022では中リスクは<140
+    # --- 欧州 (ESC/EAS) ---
+    # 欧州はFHや長期DMを「超高リスク(<55)」「高リスク(<70)」に分類する
+    if (has_dm and risk_factors >= 1) or (has_ckd) or (has_fh and risk_factors >= 1):
+        targets["EU"] = {"val": 55, "desc": "超高リスク (DM+合併症等)"}
+    elif has_fh or has_dm:
+        targets["EU"] = {"val": 70, "desc": "高リスク"}
+    elif risk_factors >= 3: # SCOREチャートの代用
+        targets["EU"] = {"val": 100, "desc": "中リスク"}
+    else:
+        targets["EU"] = {"val": 116, "desc": "低リスク"}
+
+    # --- 米国 (ACC/AHA) ---
+    # 米国は数値目標よりリスク低減率を重視するが、閾値として設定
+    if has_dm or has_fh:
+        targets["US"] = {"val": 70, "desc": "DM/FHは厳格管理"} # 実際は個別判断
+    elif risk_factors >= 2:
+        targets["US"] = {"val": 100, "desc": "中等度リスク"}
+    else:
+        targets["US"] = {"val": 130, "desc": "低リスク (生活習慣改善)"}
+
+# --- UI表示 ---
+
+# 1. 3極比較カード
+st.subheader("🏁 ガイドライン別 管理目標値")
+
+col1, col2, col3 = st.columns(3)
+
+def show_metric(col, region, flag, data):
+    with col:
+        st.markdown(f"### {flag} {region}")
+        st.metric(label=data["desc"], value=f"< {data['val']}")
+        diff = current_ldl - data['val']
+        if diff > 0:
+            st.error(f"あと {diff} 低下が必要")
         else:
-            target_ldl = 160
-            risk_category = "低リスク (Low Risk)"
-            description = "主要なリスク因子が少ない状態。"
+            st.success("達成済み")
 
-# --- 結果表示 ---
+show_metric(col1, "日本 (JAS)", "🇯🇵", targets["JP"])
+show_metric(col2, "欧州 (ESC)", "🇪🇺", targets["EU"])
+show_metric(col3, "米国 (ACC/ADA)", "🇺🇸", targets["US"])
 
+# 2. 比較チャート (Bar Chart)
 st.divider()
+st.subheader("📊 厳格度の比較")
 
-col1, col2 = st.columns([1, 2])
+# データフレーム作成
+df = pd.DataFrame({
+    "Region": ["日本 (JAS)", "欧州 (ESC)", "米国 (ACC)"],
+    "Target LDL": [targets["JP"]["val"], targets["EU"]["val"], targets["US"]["val"]],
+    "Color": ["#d62728", "#1f77b4", "#2ca02c"] # Plotly colors
+})
 
-with col1:
-    st.metric(label="あなたの管理目標値", value=f"{target_ldl} mg/dL未満")
-    delta = current_ldl - target_ldl
-    state = "normal" if delta <= 0 else "off"
-    st.metric(label="現在の値との差", value=f"{current_ldl} mg/dL", delta=f"{delta} mg/dL", delta_color=state)
+# 現在値のラインを追加したチャート
+fig = go.Figure()
 
-with col2:
-    st.subheader(f"判定: {risk_category}")
-    st.info(description)
+# 各国の目標値バー
+fig.add_trace(go.Bar(
+    x=df["Region"],
+    y=df["Target LDL"],
+    text=df["Target LDL"],
+    textposition='auto',
+    marker_color=['#FF9999', '#9999FF', '#99FF99'],
+    name="目標値"
+))
 
-# --- ゲージチャートによる可視化 ---
-fig = go.Figure(go.Indicator(
-    mode = "gauge+number+delta",
-    value = current_ldl,
-    domain = {'x': [0, 1], 'y': [0, 1]},
-    title = {'text': "LDL Status"},
-    delta = {'reference': target_ldl, 'increasing': {'color': "red"}, 'decreasing': {'color': "green"}},
-    gauge = {
-        'axis': {'range': [None, 300], 'tickwidth': 1, 'tickcolor': "darkblue"},
-        'bar': {'color': "darkblue"},
-        'bgcolor': "white",
-        'borderwidth': 2,
-        'bordercolor': "gray",
-        'steps': [
-            {'range': [0, target_ldl], 'color': "lightgreen"},
-            {'range': [target_ldl, target_ldl + 30], 'color': "yellow"},
-            {'range': [target_ldl + 30, 300], 'color': "pink"}],
-        'threshold': {
-            'line': {'color': "red", 'width': 4},
-            'thickness': 0.75,
-            'value': target_ldl}}))
+# 現在値のライン
+fig.add_shape(
+    type="line",
+    x0=-0.5, x1=2.5,
+    y0=current_ldl, y1=current_ldl,
+    line=dict(color="Red", width=4, dash="dash"),
+)
+
+fig.add_annotation(
+    x=2.5, y=current_ldl,
+    text=f"現在値: {current_ldl}",
+    showarrow=True, arrowhead=1
+)
+
+fig.update_layout(
+    title="あなたの現在値 vs 各国の目標値 (低いほど厳格)",
+    yaxis_title="LDL-C (mg/dL)",
+    yaxis_range=[0, max(current_ldl + 20, 180)]
+)
 
 st.plotly_chart(fig, use_container_width=True)
 
-# --- ガイドラインの参照表 ---
-with st.expander("参考：JAS 2022 ガイドライン簡易表"):
-    st.markdown("""
-    | リスク区分 | 目標値 |
-    | :--- | :--- |
-    | **二次予防（冠動脈疾患既往）** | **< 100** (高リスク病態は **< 70**) |
-    | **高リスク（糖尿病・CKD・脳梗塞など）** | **< 120** |
-    | **中リスク** | **< 140** |
-    | **低リスク** | **< 160** |
-    """)
+# 3. 解説
+st.info(f"""
+**解説:**
+- **欧州 (ESC)** は世界で最も厳格で、二次予防では一律 **55mg/dL未満** を推奨しています。
+- **米国** は近年欧州基準に近づいており、特に糖尿病や超高リスク群では **55mg/dL** を考慮します。
+- **日本** は人種差（冠動脈疾患の少なさ）を考慮し、全体的にマイルドですが、リスクが高い場合は **70mg/dL** 未満への厳格化が進んでいます。
+""")
